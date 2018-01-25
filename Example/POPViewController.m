@@ -10,6 +10,13 @@
 
 @implementation POPViewController
 
+- (NSURL *)url {
+    if (!_url) {
+        _url = [NSURL URLWithString:@"https://js-sdk-integration.herokuapp.com/v3/paypal-checkout?v3Version=latest&js=prod&merchant=sandbox"];
+    }
+    return _url;
+}
+
 - (void)viewDidLoad
 {
     [super viewDidLoad];
@@ -20,7 +27,7 @@
     self.popupBridge = [[POPPopupBridge alloc] initWithWebView:self.webView delegate:self];
 
     [self.view addSubview:self.webView];
-    [self.webView loadRequest:[NSURLRequest requestWithURL:[NSURL URLWithString:@"https://braintree.github.io/popup-bridge-example/"]]];
+    [self.webView loadRequest:[NSURLRequest requestWithURL:self.url]];
 }
 
 - (void)popupBridge:(POPPopupBridge *)bridge requestsPresentationOfViewController:(UIViewController *)viewController {

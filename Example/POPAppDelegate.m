@@ -1,5 +1,6 @@
 #import "POPAppDelegate.h"
 #import <PopupBridge/POPPopupBridge.h>
+#import "POPViewController.h"
 
 #define kReturnURLScheme @"com.braintreepayments.popupbridgeexample"
 
@@ -9,6 +10,17 @@
 {
     // 1. Set return URL scheme
     [POPPopupBridge setReturnURLScheme:kReturnURLScheme];
+
+    for (NSString *arg in [[NSProcessInfo processInfo] arguments]) {
+        if ([arg rangeOfString:@"-url::"].location != NSNotFound) {
+            NSString *urlString = [arg stringByReplacingOccurrencesOfString:@"-url::" withString:@""];
+            NSURL *url = [NSURL URLWithString:urlString];
+
+            POPViewController *viewController = (POPViewController *)self.window.rootViewController;
+            viewController.url = url;
+        }
+    }
+
     return YES;
 }
 
