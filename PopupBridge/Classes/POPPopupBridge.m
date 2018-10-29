@@ -5,6 +5,7 @@
 @interface POPPopupBridge () <SFSafariViewControllerDelegate>
 @property (nonatomic, readwrite, weak) id <POPPopupBridgeDelegate> delegate;
 @property (nonnull, nonatomic, strong) WKWebView *webView;
+@property (nonnull, nonatomic, strong) UIWebView *uiWebView;
 @property (nonatomic, strong) SFSafariViewController *safariViewController;
 @end
 
@@ -38,6 +39,21 @@ NSString * const kPOPURLHost = @"popupbridgev1";
     }
     return self;
 }
+    
+- (id)initWithUIWebView:(UIWebView *)uiWebView delegate:(id<POPPopupBridgeDelegate>)delegate {
+    if (!scheme) {
+        [NSException raise:@"POPPopupBridgeSchemeNotSet" format:@"PopupBridge requires a URL scheme to be set"];
+        return nil;
+    }
+    if (self = [super init]) {
+        self.delegate = delegate;
+        self.uiWebView = uiWebView;
+        
+        NSString *javascript = [[[[self javascriptTemplateUIWebView] stringByReplacingOccurrencesOfString:@"%%SCHEME%%" withString:scheme]  stringByReplacingOccurrencesOfString:@"%%SCRIPT_MESSAGE_HANDLER_NAME%%" withString:kPOPScriptMessageHandlerName] stringByReplacingOccurrencesOfString:@"%%HOST%%" withString:kPOPURLHost];
+        [uiWebView stringByEvaluatingJavaScriptFromString:javascript];
+    }
+    return self;
+}
 
 - (NSString *)javascriptTemplate {
     // NB: This string does not maintain newlines, so you cannot use single-line JS comments.
@@ -53,6 +69,33 @@ NSString * const kPOPURLHost = @"popupbridgev1";
                 window.webkit.messageHandlers.%%SCRIPT_MESSAGE_HANDLER_NAME%%.postMessage({\
                     url: url\
                 });\
+            };\
+            \
+            window.popupBridge.sendMessage = function sendMessage(message, data) {\
+                window.webkit.messageHandlers.%%SCRIPT_MESSAGE_HANDLER_NAME%%.postMessage({\
+                    message: {\
+                        name: message,\
+                        data: data\
+                    }\
+                });\
+            };\
+            \
+            return 0;\
+        })();";
+}
+    
+- (NSString *)javascriptTemplateUIWebView {
+    // NB: This string does not maintain newlines, so you cannot use single-line JS comments.
+    return @"\
+        ;(function () {\
+            if (!window.popupBridge) { window.popupBridge = {}; };\
+            \
+            window.popupBridge.getReturnUrlPrefix = function getReturnUrlPrefix() {\
+                return '%%SCHEME%%://%%HOST%%/';\
+            };\
+            \
+            window.popupBridge.open = function open(url) {\
+                window.location.href = url;\
             };\
             \
             window.popupBridge.sendMessage = function sendMessage(message, data) {\
@@ -104,77 +147,85 @@ NSString * const kPOPURLHost = @"popupbridgev1";
         self.safariViewController = nil;
     }
 }
+    
+- (void) didReceiveMessageFromWebView: (NSDictionary *)params {
+    NSString *urlString = params[@"url"];
+    if (urlString) {
+        [self dismissSafariViewController];
+        
+        __weak POPPopupBridge *weakSelf = self;
+        returnBlock = ^(NSURL *url) {
+            NSString *err = @"null";
+            NSString *payload = @"null";
+            NSString *script;
+            
+            if (url) {
+                NSURLComponents *urlComponents = [[NSURLComponents alloc] initWithURL:url resolvingAgainstBaseURL:NO];
+                NSString *path = urlComponents.path;
+                
+                if ([urlComponents.scheme localizedCaseInsensitiveCompare:scheme] != NSOrderedSame ||
+                    [urlComponents.host localizedCaseInsensitiveCompare:kPOPURLHost] != NSOrderedSame) {
+                    return NO;
+                }
+                
+                [weakSelf dismissSafariViewController];
+                
+                NSMutableDictionary *payloadDictionary = [NSMutableDictionary new];
+                payloadDictionary[@"path"] = path;
+                payloadDictionary[@"queryItems"] = [self.class dictionaryForQueryString:url.query];
+                if (url.fragment) {
+                    payloadDictionary[@"hash"] = url.fragment;
+                }
+                
+                NSError *error;
+                NSData *payloadData = [NSJSONSerialization dataWithJSONObject:payloadDictionary options:0 error:&error];
+                if (!payloadData) {
+                    NSString *errorMessage = [NSString stringWithFormat:@"Failed to parse query items from return URL. %@", error.localizedDescription];
+                    err = [NSString stringWithFormat:@"new Error(\"%@\")", errorMessage];
+                } else {
+                    payload = [[NSString alloc] initWithData:payloadData encoding:NSUTF8StringEncoding];
+                }
+                script = [NSString stringWithFormat:@"window.popupBridge.onComplete(%@, %@);", err, payload];
+            } else {
+                script = @""
+                "if (typeof window.popupBridge.onCancel === 'function') {"
+                "  window.popupBridge.onCancel();"
+                "} else {"
+                "  window.popupBridge.onComplete(null, null);"
+                "}";
+            }
+            
+            if ([self webView] != nil) {
+                [self.class injectWebView:weakSelf.webView withJavaScript:script];
+            }
+            if ([self uiWebView] != nil) {
+                [self.uiWebView stringByEvaluatingJavaScriptFromString:script];
+            }
+            
+            return YES;
+        };
+        
+        NSURL *url = [NSURL URLWithString:urlString];
+        
+        if ([self.delegate respondsToSelector:@selector(popupBridge:willOpenURL:)]) {
+            [self.delegate popupBridge:self willOpenURL:url];
+        }
+        
+        self.safariViewController = [[SFSafariViewController alloc] initWithURL:url];
+        self.safariViewController.delegate = self;
+        if ([self.delegate respondsToSelector:@selector(popupBridge:requestsPresentationOfViewController:)]) {
+            [self.delegate popupBridge:self requestsPresentationOfViewController:self.safariViewController];
+        }
+    } else if (params[@"message"][@"name"] && [self.delegate respondsToSelector:@selector(popupBridge:receivedMessage:data:)]) {
+        [self.delegate popupBridge:self receivedMessage:params[@"message"][@"name"] data:params[@"message"][@"data"]];
+    }
+}
 
 #pragma mark - WKScriptMessageHandler
 
 - (void)userContentController:(WKUserContentController *)userContentController didReceiveScriptMessage:(WKScriptMessage *)message {
     if ([message.name isEqualToString:kPOPScriptMessageHandlerName]) {
-        NSDictionary *params = message.body;
-        NSString *urlString = params[@"url"];
-        if (urlString) {
-            [self dismissSafariViewController];
-
-            __weak POPPopupBridge *weakSelf = self;
-            returnBlock = ^(NSURL *url) {
-                NSString *err = @"null";
-                NSString *payload = @"null";
-                NSString *script;
-
-                if (url) {
-                    NSURLComponents *urlComponents = [[NSURLComponents alloc] initWithURL:url resolvingAgainstBaseURL:NO];
-                    NSString *path = urlComponents.path;
-
-                    if ([urlComponents.scheme localizedCaseInsensitiveCompare:scheme] != NSOrderedSame ||
-                        [urlComponents.host localizedCaseInsensitiveCompare:kPOPURLHost] != NSOrderedSame) {
-                        return NO;
-                    }
-
-                    [weakSelf dismissSafariViewController];
-
-                    NSMutableDictionary *payloadDictionary = [NSMutableDictionary new];
-                    payloadDictionary[@"path"] = path;
-                    payloadDictionary[@"queryItems"] = [self.class dictionaryForQueryString:url.query];
-                    if (url.fragment) {
-                        payloadDictionary[@"hash"] = url.fragment;
-                    }
-
-                    NSError *error;
-                    NSData *payloadData = [NSJSONSerialization dataWithJSONObject:payloadDictionary options:0 error:&error];
-                    if (!payloadData) {
-                        NSString *errorMessage = [NSString stringWithFormat:@"Failed to parse query items from return URL. %@", error.localizedDescription];
-                        err = [NSString stringWithFormat:@"new Error(\"%@\")", errorMessage];
-                    } else {
-                        payload = [[NSString alloc] initWithData:payloadData encoding:NSUTF8StringEncoding];
-                    }
-                    script = [NSString stringWithFormat:@"window.popupBridge.onComplete(%@, %@);", err, payload];
-                } else {
-                    script = @""
-                    "if (typeof window.popupBridge.onCancel === 'function') {"
-                    "  window.popupBridge.onCancel();"
-                    "} else {"
-                    "  window.popupBridge.onComplete(null, null);"
-                    "}";
-                }
-
-                [self.class injectWebView:weakSelf.webView withJavaScript:script];
-
-                return YES;
-            };
-
-            NSURL *url = [NSURL URLWithString:urlString];
-            
-            if ([self.delegate respondsToSelector:@selector(popupBridge:willOpenURL:)]) {
-                [self.delegate popupBridge:self willOpenURL:url];
-            }
-            
-            self.safariViewController = [[SFSafariViewController alloc] initWithURL:url];
-            self.safariViewController.delegate = self;
-            if ([self.delegate respondsToSelector:@selector(popupBridge:requestsPresentationOfViewController:)]) {
-                [self.delegate popupBridge:self requestsPresentationOfViewController:self.safariViewController];
-            }
-        } else if (params[@"message"][@"name"] && [self.delegate respondsToSelector:@selector(popupBridge:receivedMessage:data:)]) {
-            [self.delegate popupBridge:self receivedMessage:params[@"message"][@"name"] data:params[@"message"][@"data"]];
-        }
+        [self didReceiveMessageFromWebView:message.body];
     }
 }
 

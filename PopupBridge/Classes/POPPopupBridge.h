@@ -37,7 +37,10 @@ extern NSString * const kPOPURLHost;
 /// @param webView The web view to add a script message handler to. Do not change the web view's configuration or user content controller after initializing Popup Bridge.
 /// @param delegate A delegate that presents and dismisses the Safari View Controllers.
 - (id)initWithWebView:(WKWebView *)webView delegate:(id<POPPopupBridgeDelegate>)delegate;
-
+- (id)initWithUIWebView:(UIWebView *)uiWebView delegate:(id<POPPopupBridgeDelegate>)delegate;
+    
+- (void) didReceiveMessageFromWebView: (NSDictionary *)params;
+    
 /// Set the URL Scheme that you have registered in your Info.plist.
 + (void)setReturnURLScheme:(NSString *)returnURLScheme;
 
